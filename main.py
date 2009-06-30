@@ -69,9 +69,9 @@ class SimplePage(webapp.RequestHandler):
          style="position:absolute;top:2;right:65">
         <input name="amount" size="6" maxlength="6" value="2.00"
          style="position:absolute;top:3;right:10;width:50px">
-        </form></div>
+        </form>
         """
-        page += """
+        page += """</div>
         <hr>
         <h3>Full Text Search Test</h3>
         <p>This app tests a simple full text search module for Google App Engine.

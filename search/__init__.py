@@ -137,8 +137,7 @@ class Searchable(object):
 
     @staticmethod
     def full_text_index(text):
-        """
-        Returns a set of keywords appropriate for full text indexing.
+        """Returns a set of keywords appropriate for full text indexing.
         
         Args:
             text: String.
@@ -149,7 +148,6 @@ class Searchable(object):
         >>> Searchable.full_text_index('Only words with greater than or equal to 4 chars')
         set(['greater', 'chars', 'equal', 'words'])
         """
-        logging.debug("full_text_index on %s", text)
         if text:
             datastore_types.ValidateString(text, 'text', max_len=sys.maxint)
             text = PUNCTUATION_REGEX.sub(' ', text)
@@ -196,10 +194,8 @@ class Searchable(object):
         Use of this class method lets you easily restrict searches to a kind.
         Similar to static method full_text_search in every other respect.
         """
-        kind = cls.kind()
-        return Searchable.full_text_search(phrase, limit=limit, 
-                                           offset=offset, keys_only=keys_only, 
-                                           kind=kind)
+        return Searchable.full_text_search(phrase, limit=limit, offset=offset, 
+                                           keys_only=keys_only, kind=cls.kind())
 
     def index(self, only_index=None):
         """Generates or replaces a Search Index for a Model instance.
@@ -213,7 +209,6 @@ class Searchable(object):
         keywords = set()
         for prop_name, prop_value in self.properties().iteritems():
             if (not only_index) or (prop_name in only_index):
-                logging.debug('Indexing %s property of kind %s...', prop_name, self.kind())
                 values = prop_value.get_value_for_datastore(self)
                 if not isinstance(values, list):
                     values = [values]
@@ -245,7 +240,6 @@ class Searchable(object):
 class SearchIndexing(webapp.RequestHandler):
     """Handler for full text indexing task."""
     def post(self):
-        logging.debug("SearchIndexing web hook activated!")
         key_str = self.request.get('key')
         only_index_str = self.request.get('only_index')
         if key_str:
