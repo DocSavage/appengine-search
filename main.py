@@ -49,14 +49,28 @@ class Page(search.Searchable, db.Model):
 class SimplePage(webapp.RequestHandler):
     def render(self, html):
         user = users.get_current_user()
-        page = '<html><body><div><a href="/">Add Page</a> | '
+        page = '<html><body><div style="display:inline"><a href="/">Add Page</a> | '
         if user:
             page += 'Logged in as %s ' % (user.nickname())
             logout_url = users.create_logout_url(self.request.uri)
-            page += '| <a href="%s">Logout</a></div>' % (logout_url)
+            page += '| <a href="%s">Logout</a>' % (logout_url)
         else:
             login_url = users.create_login_url(self.request.uri)
-            page += '<a href="%s">Google login</a></div>' % (login_url)
+            page += '<a href="%s">Google login</a>' % (login_url)
+        # Add donation button so I can get chinese dinner money :)
+        page += """
+        <form name="_xclick" action="https://www.paypal.com/cgi-bin/webscr" method="post">
+        <input type="hidden" name="cmd" value="_xclick">
+        <input type="hidden" name="business" value="billkatz@gmail.com">
+        <input type="hidden" name="item_name" value="Donate to Coder">
+        <input type="hidden" name="currency_code" value="USD">
+        <input type="image" src="http://www.paypal.com/en_US/i/btn/btn_donate_LG.gif" border="0" 
+         name="submit" alt="Donate and help feed a programmer."
+         style="position:absolute;top:2;right:65">
+        <input name="amount" size="6" maxlength="6" value="2.00"
+         style="position:absolute;top:3;right:10;width:50px">
+        </form></div>
+        """
         page += """
         <hr>
         <h3>Full Text Search Test</h3>
