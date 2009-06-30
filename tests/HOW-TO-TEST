@@ -1,0 +1,21 @@
+Testing a Google App Engine app
+===============================
+
+This app uses the nose testing framework.  To get started, make sure
+you've installed the necessary components:
+
+sudo easy_install nose
+sudo easy_install NoseGAE
+
+Download WebTest (http://pythonpaste.org/webtest).
+cd into webtest directory then:
+sudo python setup.py build
+sudo python setup.py install
+
+If all the components have been downloaded and installed correctly,
+you'll be able to run tests from the command line:
+
+nosetests -v --with-gae --with-doctest
+
+The above will run doctests embedded in source files as well as
+test scripts in the /tests directory.
