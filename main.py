@@ -62,7 +62,7 @@ class SimplePage(webapp.RequestHandler):
         <form name="_xclick" action="https://www.paypal.com/cgi-bin/webscr" method="post">
         <input type="hidden" name="cmd" value="_xclick">
         <input type="hidden" name="business" value="billkatz@gmail.com">
-        <input type="hidden" name="item_name" value="Donate to Coder">
+        <input type="hidden" name="item_name" value="Donation to help feed self-funded coder">
         <input type="hidden" name="currency_code" value="USD">
         <input type="image" src="http://www.paypal.com/en_US/i/btn/btn_donate_LG.gif" border="0" 
          name="submit" alt="Donate and help feed a programmer."
@@ -75,13 +75,16 @@ class SimplePage(webapp.RequestHandler):
         <hr>
         <h3>Full Text Search Test</h3>
         <p>This app tests a simple full text search module for Google App Engine.
-        The search module uses the Task Queue API to schedule full text indexing and
-        creates relation index entities (as described in 
+        Once you are logged in, you can add text pages that will be indexed via
+        Task Queue API tasks.  The search indices are efficiently stored using
+        "Relation Index" entities as described in 
         <a href="http://code.google.com/events/io/sessions/BuildingScalableComplexApps.html">
-        Brett Slatkin's 'Building Scalable, Complex Apps on App Engine' talk</a>
-        at Google I/O, 2009).
-        </p>
-        <p>See <a href="http://www.billkatz.com/">my blog</a> for more information.</p>
+        this Google I/O talk.</a></p>
+        <p>My blog has an
+        <a href="http://www.billkatz.com/2009/6/Simple-Full-Text-Search-for-App-Engine">
+        article on this appengine-search module</a>.  You can download the code from the
+        <a href="http://github.com/DocSavage/appengine-search">appengine-search
+        github repository</a> under a liberal open source (MIT) license.</p>
         <form action="/search" method="get">
             Search for phrase (e.g., 'lorem ipsum'):
         """
