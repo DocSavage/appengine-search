@@ -33,7 +33,7 @@ ullamco laboris nisi ut aliquip ex ea commodo consequat.
 Duis aute irure dolor in reprehenderit in voluptate velit 
 esse cillum dolore eu fugiat nulla pariatur. Excepteur sint 
 occaecat cupidatat non proident, sunt in culpa qui officia 
-deserunt mollit anim id est laborum.
+deserunt mollit anim id est laborum.  Encrusted.
 """
 
 INFLECTION_TEST = """
@@ -115,6 +115,11 @@ class TestLoremIpsum:
         imatch = re.search(r'ipsum', returned_pages[0].content, re.IGNORECASE)
         assert not lmatch and not imatch
 
+    def test_not_inflected(self):
+        returned_pages = NoninflectedPage.search('encrust')
+        assert not returned_pages
+        returned_pages = NoninflectedPage.search('encrusted')
+        assert returned_pages
 
 class TestInflection:
     def setup(self):

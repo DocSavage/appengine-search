@@ -255,8 +255,10 @@ class Searchable(object):
         args = {'parent': key, 'key_name': index_key_name,
                 'parent_kind': key.kind(), 'keywords': keyword_list }
         if self.USE_STEMMING:
+            logging.debug('Writing index using stemming for kind %s:', key.kind())
             index_entity = StemIndex(**args)
         else:
+            logging.debug('Writing index (not using stemming) for kind %s:', key.kind())
             index_entity = SearchIndex(**args)
         index_entity.put()
 
@@ -281,6 +283,6 @@ class SearchIndexing(webapp.RequestHandler):
         if key_str:
             key = db.Key(key_str)
             entity = db.get(key)
-            only_index = only_index_str.split(',')
+            only_index = only_index_str.split(',') if only_index_str else None
             entity.index(only_index=only_index)
 
