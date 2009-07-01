@@ -3,6 +3,7 @@
 # The MIT License
 # 
 # Copyright (c) 2009 William T. Katz
+# Website/Contact: http://www.billkatz.com
 # 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to 
@@ -32,7 +33,6 @@ Complex Apps on App Engine' talk at Google I/O, 2009).
 The keyword extraction code was slightly modified from Ryan Barrett's
 SearchableModel implementation.
 """
-
 __author__ = 'William T. Katz'
 
 import logging
@@ -46,6 +46,9 @@ from google.appengine.ext import webapp
 
 # TODO -- This will eventually be moved out of labs namespace
 from google.appengine.api.labs import taskqueue
+
+# Use python port of Porter2 stemmer.
+from search.pyporter2 import Stemmer
 
 # Following module-level constants are cached in instance
 
@@ -91,8 +94,17 @@ class SearchIndex(db.Model):
     This model is used by the Searchable mix-in to hold full text
     indexes of a parent entity.
     """
-    parent_kind = db.StringProperty()
-    keywords = db.StringListProperty()
+    parent_kind = db.StringProperty(required=True)
+    keywords = db.StringListProperty(required=True)
+
+class StemIndex(db.Model):
+    """A relation index that holds full text stem indexing on an entity.
+    
+    StemIndex should be used for full text indexing with stemming.
+    """
+    parent_kind = db.StringProperty(required=True)
+    keywords = db.StringListProperty(required=True)
+
 
 class Searchable(object):
     """A class that supports full text indexing and search on entities.
@@ -102,6 +114,9 @@ class Searchable(object):
         class Page(Searchable, db.Model):
             author_name = db.StringProperty()
             content = db.TextProperty()
+            # USE_STEMMING = False
+
+    Stemming can be toggled by setting USE_STEMMING in your class declaration.
 
     The queue_indexing() method should be called after your model is created or
     edited:
@@ -133,7 +148,13 @@ class Searchable(object):
     not just a particular kind, that have been indexed:
 
         Searchable.full_text_search('stuff')  # -> Returns any entities
+        Searchable.full_text_search('stuff', stemming=False)
+
+    Because stemming can be toggled for any particular Model, only entities will
+    be returned that match indexing style (i.e., stemming on or off).
     """
+
+    USE_STEMMING = True     # Allow stemming to be turned off per subclass.
 
     @staticmethod
     def full_text_index(text):
@@ -145,8 +166,8 @@ class Searchable(object):
         Returns:
             A set of keywords that aren't stop words and meet length requirement.
 
-        >>> Searchable.full_text_index('Only words with greater than or equal to 4 chars')
-        set(['greater', 'chars', 'equal', 'words'])
+        >>> Searchable.full_text_index('I shall return.')
+        set(['return'])
         """
         if text:
             datastore_types.ValidateString(text, 'text', max_len=sys.maxint)
@@ -162,40 +183,45 @@ class Searchable(object):
         return words
 
     @staticmethod
-    def full_text_search(phrase, limit=10, offset=0, keys_only=False, kind=None):
+    def full_text_search(phrase, limit=10, offset=0, kind=None, stemming=True):
         """Queries search indices for keywords in a phrase using a merge-join.
         
         Args:
             phrase: String.  Search phrase with space between keywords
-            keys_only: Returns only parent keys if True.
             kind: String.  Returned keys/entities are restricted to this kind.
 
         Returns:
             A list of parent keys or parent entities, depending on the value
             of keys_only argument.
         """
-        keywords = phrase.split()
-        query = SearchIndex.all(keys_only=True)
+        if stemming:
+            stemmer = Stemmer.Stemmer('english')
+            keywords = stemmer.stemWords(phrase.split())
+            query = StemIndex.all(keys_only=True)
+        else:
+            keywords = phrase.split()
+            query = SearchIndex.all(keys_only=True)
         for keyword in keywords:
             query = query.filter('keywords =', keyword.lower())
         if kind:
             query = query.filter('parent_kind =', kind)
         index_keys = query.fetch(limit=limit, offset=offset)
-        parent_keys = [key.parent() for key in index_keys]
-        if keys_only:
-            return parent_keys
-        else:
-            return db.get(parent_keys)
+        return [key.parent() for key in index_keys]
 
     @classmethod
     def search(cls, phrase, limit=10, offset=0, keys_only=False):
         """Queries search indices for keywords in a phrase using a merge-join.
         
-        Use of this class method lets you easily restrict searches to a kind.
-        Similar to static method full_text_search in every other respect.
+        Use of this class method lets you easily restrict searches to a kind
+        and retrieve entities or keys.
         """
-        return Searchable.full_text_search(phrase, limit=limit, offset=offset, 
-                                           keys_only=keys_only, kind=cls.kind())
+        keys = Searchable.full_text_search(phrase, limit=limit, offset=offset, 
+                                           kind=cls.kind(),
+                                           stemming=cls.USE_STEMMING)
+        if keys_only:
+            return keys
+        else:
+            return cls.get(keys)
 
     def index(self, only_index=None):
         """Generates or replaces a Search Index for a Model instance.
@@ -206,6 +232,8 @@ class Searchable(object):
         Args:
             only_index: List of strings.  Restricts indexing to these property names.
         """
+        if self.USE_STEMMING:
+            stemmer = Stemmer.Stemmer('english')
         keywords = set()
         for prop_name, prop_value in self.properties().iteritems():
             if (not only_index) or (prop_name in only_index):
@@ -215,14 +243,22 @@ class Searchable(object):
                 if (isinstance(values[0], basestring) and
                         not isinstance(values[0], datastore_types.Blob)):
                     for value in values:
-                        keywords.update(Searchable.full_text_index(value))
+                        words = Searchable.full_text_index(value)
+                        if self.USE_STEMMING:
+                            stemmed_words = set([stemmer.stemWord(w) for w in words])
+                            keywords.update(stemmed_words)
+                        else:
+                            keywords.update(words)
         keyword_list = list(keywords)
         key = self.key()
         index_key_name = key.kind() + str(key.id_or_name())
-        search_entity = SearchIndex(
-            parent=key, key_name=index_key_name,
-            parent_kind=key.kind(), keywords=keyword_list)
-        search_entity.put()
+        args = {'parent': key, 'key_name': index_key_name,
+                'parent_kind': key.kind(), 'keywords': keyword_list }
+        if self.USE_STEMMING:
+            index_entity = StemIndex(**args)
+        else:
+            index_entity = SearchIndex(**args)
+        index_entity.put()
 
     def queue_indexing(self, url, only_index=None):
         """Adds an indexing task to the default task queue.

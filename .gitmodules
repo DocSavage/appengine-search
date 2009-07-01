@@ -1,0 +1,3 @@
+[submodule "search/pyporter2"]
+	path = search/pyporter2
+	url = git://github.com/mdirolf/pyporter2.git
