@@ -123,7 +123,7 @@ class MainPage(SimplePage):
         else:
             page = Page(content=content, user=user)
             page.put()
-            page.queue_indexing(url=INDEXING_URL)
+            page.enqueue_indexing(url=INDEXING_URL)
             html = "<div>Thanks for entering the following text:</div>"
             html += "<pre>%s</pre>" % (cgi.escape(content))
             self.render(html)

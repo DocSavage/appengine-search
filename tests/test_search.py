@@ -24,6 +24,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import re
+import os
 
 LOREM_IPSUM = """
 Lorem ipsum dolor sit amet, consectetur adipisicing elit, 
@@ -70,7 +71,17 @@ class NoninflectedPage(search.Searchable, db.Model):
     """Used to test search without stemming, e.g. for precise, non-inflected words"""
     author_name = db.StringProperty()
     content = db.TextProperty()
-    USE_STEMMING = False
+    STEMMING = False
+
+class TestMisc:
+    def setup(self):
+        clear_datastore()
+
+    def test_appostrophed_key(self):
+        page = Page(key_name="Show Don't Tell", author_name="Pro Author",
+                    content="You should always show and not tell through dialogue or narration.")
+        key = page.put()
+        assert str(key.name()) == "Show Don't Tell"
 
 class TestLoremIpsum:
     def setup(self):
@@ -145,3 +156,26 @@ class TestInflection:
         check_inflection('python', 'pythonic')
         check_inflection('rubies', 'ruby')
         check_inflection('encrust', 'encrusted')
+
+class TestBigIndex:
+    def setup(self):
+        clear_datastore()
+
+    def test_multientity_index(self):
+        curdir = os.path.abspath(os.path.dirname(__file__))
+        bigtextfile = os.path.join(curdir, 'roget.txt')
+        import codecs
+        bigfile = codecs.open(bigtextfile, 'r', 'utf-8')
+        bigtext = bigfile.read()
+        words_to_use = 10 * search.MAX_KEYWORDS_PER_ENTITY
+        words = bigtext.split()
+        Page.MULTI_INDEX_ENTITIES = True
+        page = Page(key_name="Foo", content=' '.join(words[0:words_to_use]))
+        page.put()
+        page.index()
+        assert search.StemIndex.all().count() > 1
+        page = Page(key_name="Foo", content=INFLECTION_TEST)
+        page.put()
+        page.index()
+        assert search.StemIndex.all().count() == 1
+        

@@ -40,6 +40,7 @@ import re
 import string
 import sys
 
+from google.appengine.api import datastore
 from google.appengine.api import datastore_types
 from google.appengine.ext import db
 from google.appengine.ext import webapp
@@ -51,6 +52,8 @@ from google.appengine.api.labs import taskqueue
 from search.pyporter2 import Stemmer
 
 # Following module-level constants are cached in instance
+
+MAX_KEYWORDS_PER_ENTITY = datastore._MAX_INDEXED_PROPERTIES - 50
 
 FULL_TEXT_MIN_LENGTH = 4
 
@@ -114,16 +117,26 @@ class Searchable(object):
         class Page(Searchable, db.Model):
             author_name = db.StringProperty()
             content = db.TextProperty()
-            # USE_STEMMING = False
+            # STEMMING = False
+            # MULTI_INDEX_ENTITIES = True
 
-    Stemming can be toggled by setting USE_STEMMING in your class declaration.
+    Stemming is on by default but can be toggled off by setting STEMMING
+    to False in your class declaration.
 
-    The queue_indexing() method should be called after your model is created or
+    Because most keyword lists generated from an entity will be under the
+    approximately 5000 indexed property limit, this module preferentially
+    stores only one index entity.  You can allow larger indexes by setting
+    MULTI_INDEX_ENTITIES to True.  This incurs overhead on every indexing
+    operation, whether multiple index entities are writter or not, because
+    we must query for all index entities and delete unused ones.  In the
+    case of a single index entity, it can be simply overwritten.
+
+    The enqueue_indexing() method should be called after your model is created or
     edited:
 
         myPage = Page(author_name='John Doe', content='My amazing content!')
         myPage.put()
-        myPage.queue_indexing(url='/tasks/searchindexing')
+        myPage.enqueue_indexing(url='/tasks/searchindexing')
 
     Note that a url must be included that corresponds with the url mapped
     to search.SearchIndexing controller.
@@ -131,7 +144,7 @@ class Searchable(object):
     You can limit the properties indexed by passing in a list of 
     property names:
 
-        myPage.queue_indexing(url='/foo', only_index=['content'])
+        myPage.enqueue_indexing(url='/foo', only_index=['content'])
 
     If you want to risk getting a timeout during indexing, you could
     index immediately after putting your model and forego task queueing:
@@ -154,19 +167,51 @@ class Searchable(object):
     be returned that match indexing style (i.e., stemming on or off).
     """
 
-    USE_STEMMING = True     # Allow stemming to be turned off per subclass.
+    STEMMING = True                 # Allow stemming to be turned off per subclass.
+    MULTI_INDEX_ENTITIES = False    # If FALSE, limit keywords to < MAX_KEYWORDS_PER_ENTITY
+    MULTI_WORD_LITERAL = False      # If TRUE, allow "search term" that matches phrase
 
     @staticmethod
-    def full_text_index(text):
-        """Returns a set of keywords appropriate for full text indexing.
+    def full_text_search(phrase, 
+                        limit=10, offset=0, kind=None, 
+                        stemming=STEMMING):
+        """Queries search indices for keywords in a phrase using a merge-join.
         
+        Args:
+            phrase: String.  Search phrase with space between keywords
+            kind: String.  Returned keys/entities are restricted to this kind.
+
+        Returns:
+            A list of parent keys or parent entities, depending on the value
+            of keys_only argument.
+        """
+        if stemming:
+            stemmer = Stemmer.Stemmer('english')
+            keywords = stemmer.stemWords(phrase.split())
+            klass = StemIndex
+        else:
+            keywords = phrase.split()
+            klass = SearchIndex
+
+        query = klass.all(keys_only=True)
+        for keyword in keywords:
+            query = query.filter('keywords =', keyword.lower())
+        if kind:
+            query = query.filter('parent_kind =', kind)
+        index_keys = query.fetch(limit=limit, offset=offset)
+        return [key.parent() for key in index_keys]
+
+    @classmethod
+    def get_simple_search_phraseset(cls, text):
+        """Returns a simple set of keywords from given text.
+
         Args:
             text: String.
 
         Returns:
             A set of keywords that aren't stop words and meet length requirement.
 
-        >>> Searchable.full_text_index('I shall return.')
+        >>> Searchable.get_simple_search_phraseset('I shall return.')
         set(['return'])
         """
         if text:
@@ -182,31 +227,53 @@ class Searchable(object):
             words = set()
         return words
 
-    @staticmethod
-    def full_text_search(phrase, limit=10, offset=0, kind=None, stemming=True):
-        """Queries search indices for keywords in a phrase using a merge-join.
-        
+    @classmethod
+    def get_search_phraseset(cls, text):
+        """Returns set of phrases, including two and three adjacent word phrases 
+           not spanning punctuation or stop words.
+
         Args:
-            phrase: String.  Search phrase with space between keywords
-            kind: String.  Returned keys/entities are restricted to this kind.
+            text: String with punctuation.
 
         Returns:
-            A list of parent keys or parent entities, depending on the value
-            of keys_only argument.
+            A set of search terms that aren't stop words and meet length 
+            requirement.  Set includes phrases of adjacent words that
+            aren't stop words.
+
+        >>> Searchable.get_search_phraseset('Recalling friends, past and present.')
+        set(['recalling', 'recalling friends', 'friends'])
         """
-        if stemming:
-            stemmer = Stemmer.Stemmer('english')
-            keywords = stemmer.stemWords(phrase.split())
-            query = StemIndex.all(keys_only=True)
+        if text:
+            datastore_types.ValidateString(text, 'text', max_len=sys.maxint)
+            text = text.lower()
+            phrases = []
+            two_words = []
+            three_words = []
+            fragments = text.split()
+            for frags in fragments:
+                parts = frags.split('-')
+                for part in parts:
+                    if part:
+                        word, replaced = PUNCTUATION_REGEX.subn('', part)
+                        not_end_punctuation = (replaced > 1 or part[-1] not in string.punctuation)
+                        if (replaced and not_end_punctuation) or word in FULL_TEXT_STOP_WORDS:
+                            two_words = []
+                            three_words = []
+                        else:
+                            if len(word) >= FULL_TEXT_MIN_LENGTH:
+                                phrases.append(word)
+                            two_words.append(word)
+                            three_words.append(word)
+                            if len(two_words) == 2:
+                                phrases.append(' '.join(two_words))
+                                del two_words[0]
+                            if len(three_words) == 3:
+                                phrases.append(' '.join(three_words))
+                                del three_words[0]
+            phrases = set(phrases)
         else:
-            keywords = phrase.split()
-            query = SearchIndex.all(keys_only=True)
-        for keyword in keywords:
-            query = query.filter('keywords =', keyword.lower())
-        if kind:
-            query = query.filter('parent_kind =', kind)
-        index_keys = query.fetch(limit=limit, offset=offset)
-        return [key.parent() for key in index_keys]
+            phrases = set()
+        return phrases
 
     @classmethod
     def search(cls, phrase, limit=10, offset=0, keys_only=False):
@@ -215,24 +282,35 @@ class Searchable(object):
         Use of this class method lets you easily restrict searches to a kind
         and retrieve entities or keys.
         """
-        keys = Searchable.full_text_search(phrase, limit=limit, offset=offset, 
+        # TODO -- Handle quoted multiword query when MULTI_WORD_LITERAL = True
+
+        keys = Searchable.full_text_search(phrase, limit=limit, offset=offset,
                                            kind=cls.kind(),
-                                           stemming=cls.USE_STEMMING)
+                                           stemming=cls.STEMMING)
         if keys_only:
             return keys
         else:
             return cls.get(keys)
 
-    def index(self, only_index=None):
+    def index(self, only_index=None, indexing_func=None):
         """Generates or replaces a Search Index for a Model instance.
-        
-        TODO -- Automatically deal with indices that violate index size limits
-                by using more than one Search Index entities.
 
-        Args:
+        Args (optional):
             only_index: List of strings.  Restricts indexing to these property names.
+            indexing_func: A function that returns a set of keywords or phrases.
+
+        Note that the indexing_func can be passed in to allow more customized
+        search phrase generation.  Multi-word literal search phrases (via setting
+        the class MULTI_WORD_LITERAL to True) is currently experimental but
+        shows how you can have different search phrase generation functions.
         """
-        if self.USE_STEMMING:
+        if not indexing_func:
+            klass = self.__class__
+            if klass.MULTI_WORD_LITERAL:
+                indexing_func = klass.get_search_phraseset
+            else:
+                indexing_func = klass.get_simple_search_phraseset
+        if self.STEMMING:
             stemmer = Stemmer.Stemmer('english')
         keywords = set()
         for prop_name, prop_value in self.properties().iteritems():
@@ -243,26 +321,49 @@ class Searchable(object):
                 if (isinstance(values[0], basestring) and
                         not isinstance(values[0], datastore_types.Blob)):
                     for value in values:
-                        words = Searchable.full_text_index(value)
-                        if self.USE_STEMMING:
+                        words = indexing_func(value)
+                        if self.STEMMING:
                             stemmed_words = set([stemmer.stemWord(w) for w in words])
                             keywords.update(stemmed_words)
                         else:
                             keywords.update(words)
         keyword_list = list(keywords)
-        key = self.key()
-        index_key_name = key.kind() + str(key.id_or_name())
-        args = {'parent': key, 'key_name': index_key_name,
-                'parent_kind': key.kind(), 'keywords': keyword_list }
-        if self.USE_STEMMING:
-            logging.debug('Writing index using stemming for kind %s:', key.kind())
-            index_entity = StemIndex(**args)
-        else:
-            logging.debug('Writing index (not using stemming) for kind %s:', key.kind())
-            index_entity = SearchIndex(**args)
-        index_entity.put()
 
-    def queue_indexing(self, url, only_index=None):
+        key = self.key()
+        klass = StemIndex if self.STEMMING else SearchIndex
+
+        if self.__class__.MULTI_INDEX_ENTITIES:
+            query = klass.all(keys_only=True).ancestor(self.key())
+            previous_entity_keys = query.fetch(1000)
+        num_keywords = len(keyword_list)
+        logging.debug("Number of keywords for this entity: %d", num_keywords)
+        start_index = 0
+        entity_num = 1      # Appended to key name of index entity
+        cur_entity_keys = []
+        while (num_keywords > 0):
+            cur_num_keywords = min(num_keywords, MAX_KEYWORDS_PER_ENTITY)
+            end_index = start_index + cur_num_keywords
+            num_indices = (num_keywords - 1) / MAX_KEYWORDS_PER_ENTITY + 1
+            index_key_name = key.kind() + str(key.id_or_name()) + str(entity_num)
+            args = {'parent': key, 'key_name': index_key_name,
+                    'parent_kind': key.kind(), 
+                    'keywords': keyword_list[start_index:end_index] }
+            index_entity = klass(**args)
+            cur_entity_keys.append(index_entity.put())
+            if self.__class__.MULTI_INDEX_ENTITIES:
+                start_index = end_index
+                num_keywords -= cur_num_keywords
+                entity_num += 1
+            else:
+                num_keywords = 0    # Only write one index entity
+        if self.__class__.MULTI_INDEX_ENTITIES:
+            delete_keys = []
+            for key in previous_entity_keys:
+                if key not in cur_entity_keys:
+                    delete_keys.append(key)
+            db.delete(delete_keys)
+
+    def enqueue_indexing(self, url, only_index=None):
         """Adds an indexing task to the default task queue.
         
         Args:
