@@ -245,6 +245,7 @@ class Searchable(object):
         if len(index_keys) < limit:
             new_limit = limit - len(index_keys)
             keywords = filter(lambda x: len(x) >= SEARCH_PHRASE_MIN_LENGTH, keywords)
+            logging.debug("+Keywords: %s", keywords)
             if stemming:
                 keywords = stemmer.stemWords(keywords)
             query = klass.all(keys_only=True)
@@ -256,7 +257,7 @@ class Searchable(object):
                                    if key not in index_keys]
             index_keys.extend(single_word_matches)
 
-        return [key.parent() for key in set(index_keys)]
+        return [key.parent() for key in index_keys]
 
     @classmethod
     def get_simple_search_phraseset(cls, text):
@@ -419,7 +420,7 @@ class Searchable(object):
             query = klass.all(keys_only=True).ancestor(self.key())
             previous_entity_keys = query.fetch(1000)
         num_phrases = len(search_phrases)
-        logging.debug("Number of search phrases for this entity: %d", num_phrases)
+
         start_index = 0
         entity_num = 1      # Appended to key name of index entity
         cur_entity_keys = []
