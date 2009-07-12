@@ -53,7 +53,7 @@ from search.pyporter2 import Stemmer
 
 # Following module-level constants are cached in instance
 
-MAX_ENTITY_SEARCH_PHRASES = datastore._MAX_INDEXED_PROPERTIES - 50
+MAX_ENTITY_SEARCH_PHRASES = datastore._MAX_INDEXED_PROPERTIES - 1
 
 SEARCH_PHRASE_MIN_LENGTH = 4
 
@@ -349,8 +349,6 @@ class Searchable(object):
         Use of this class method lets you easily restrict searches to a kind
         and retrieve entities or keys.
         """
-        # TODO -- Handle quoted multiword query when MULTI_WORD_LITERAL = True
-
         keys = Searchable.full_text_search(phrase,
                     limit=limit, kind=cls.kind(),
                     stemming=cls.STEMMING, 

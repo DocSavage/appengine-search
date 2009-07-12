@@ -162,11 +162,9 @@ class TestInflection:
 
 class TestBigIndex:
     def setup(self):
-        return
         clear_datastore()
 
     def test_multientity_index(self):
-        return
         curdir = os.path.abspath(os.path.dirname(__file__))
         bigtextfile = os.path.join(curdir, 'roget.txt')
         import codecs
