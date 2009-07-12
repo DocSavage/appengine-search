@@ -71,8 +71,8 @@ class NoninflectedPage(search.Searchable, db.Model):
     """Used to test search without stemming, e.g. for precise, non-inflected words"""
     author_name = db.StringProperty()
     content = db.TextProperty()
-    STEMMING = False
-    ONLY_INDEX = ['content']
+    INDEX_STEMMING = False
+    INDEX_ONLY = ['content']
 
 class TestMisc:
     def setup(self):
@@ -172,7 +172,7 @@ class TestBigIndex:
         bigtext = bigfile.read()
         words_to_use = 4 * search.MAX_ENTITY_SEARCH_PHRASES
         words = bigtext.split()
-        Page.MULTI_INDEX_ENTITIES = True
+        Page.INDEX_USES_MULTI_ENTITIES = True
         page = Page(key_name="Foo", content=' '.join(words[0:words_to_use]))
         page.put()
         page.index()

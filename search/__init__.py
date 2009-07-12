@@ -117,10 +117,10 @@ class Searchable(object):
         class Page(Searchable, db.Model):
             author_name = db.StringProperty()
             content = db.TextProperty()
-            # STEMMING = False
-            # MULTI_INDEX_ENTITIES = False
-            # MULTI_WORD_LITERAL = False
-            # ONLY_INDEX = ['content']
+            # INDEX_STEMMING = False
+            # INDEX_USES_MULTI_ENTITIES = False
+            # INDEX_MULTI_WORD = False
+            # INDEX_ONLY = ['content']
 
     There are a few class variables that can be overridden by your Model.
     The settings were made class variables because their use should be
@@ -129,20 +129,20 @@ class Searchable(object):
     Defaults are for searches to use stemming, multiple index entities,
     and index all basestring-derived properties.  Also, two and three-word
     phrases are inserted into the index, which can be disable by setting
-    MULTI_WORD_LITERAL to False.
+    INDEX_MULTI_WORD to False.
 
-    Stemming is on by default but can be toggled off by setting STEMMING
+    Stemming is on by default but can be toggled off by setting INDEX_STEMMING
     to False in your class declaration.
 
-    You can set a class variable ONLY_INDEX to a list of property names
-    for indexing.  If ONLY_INDEX is not None, only those properties named
+    You can set a class variable INDEX_ONLY to a list of property names
+    for indexing.  If INDEX_ONLY is not None, only those properties named
     in the list will be indexed.
 
     Because most search phrase lists generated from an entity will be under
     the approximately 5000 indexed property limit, you can make indexing
-    more efficient by setting MULTI_INDEX_ENTITIES to False if you know
+    more efficient by setting INDEX_USES_MULTI_ENTITIES to False if you know
     your indexed content will be relatively small (or you don't care about
-    some false negatives).  When MULTI_INDEX_ENTITIES is True (default),
+    some false negatives).  When INDEX_USES_MULTI_ENTITIES is True (default),
     there is slight overhead on every indexing operation because
     we must query for all index entities and delete unused ones.  In the
     case of a single index entity, it can be simply overwritten.
@@ -176,7 +176,7 @@ class Searchable(object):
     In the case of multi-word search phrases like the first example above,
     the search will first list keys that match the full phrase and then
     list keys that match the AND of individual keywords.  Note that when
-    MULTI_INDEX_ENTITIES is True (default), if a Page's index is spread
+    INDEX_USES_MULTI_ENTITIES is True (default), if a Page's index is spread
     over multiple index entities, the keyword AND may fail portion of the
     search may fail, i.e., there will be false negative search results.
 
@@ -190,18 +190,19 @@ class Searchable(object):
     be returned that match indexing style (i.e., stemming on or off).
     """
 
-    ONLY_INDEX = None               # Can set to list of property names to index.
-    STEMMING = True                 # Allow stemming to be turned off per subclass.
-    MULTI_WORD_LITERAL = True       # Add two and three-word phrases to index.
+    INDEX_ONLY = None           # Can set to list of property names to index.
+    INDEX_STEMMING = True       # Allow stemming to be turned off per subclass.
+    INDEX_MULTI_WORD = True     # Add two and three-word phrases to index.
 
-    MULTI_INDEX_ENTITIES = True     # If FALSE, limit phrases to < MAX_ENTITY_SEARCH_PHRASES
-                                    # If TRUE, incurs additional query/delete overhead on indexing.
+    # If TRUE, incurs additional query/delete overhead on indexing but will workaround
+    # indexed properties limit (MAX_ENTITY_SEARCH_PHRASES)
+    INDEX_USES_MULTI_ENTITIES = True
 
     @staticmethod
     def full_text_search(phrase, limit=10, 
                          kind=None, 
-                         stemming=STEMMING,
-                         multi_word_literal=MULTI_WORD_LITERAL):
+                         stemming=INDEX_STEMMING,
+                         multi_word_literal=INDEX_MULTI_WORD):
         """Queries search indices for phrases using a merge-join.
         
         Args:
@@ -351,8 +352,8 @@ class Searchable(object):
         """
         keys = Searchable.full_text_search(phrase,
                     limit=limit, kind=cls.kind(),
-                    stemming=cls.STEMMING, 
-                    multi_word_literal=cls.MULTI_WORD_LITERAL)
+                    stemming=cls.INDEX_STEMMING, 
+                    multi_word_literal=cls.INDEX_MULTI_WORD)
         if keys_only:
             return keys
         else:
@@ -369,23 +370,23 @@ class Searchable(object):
         search phrase generation.
 
         Two model variables influence the output of this method:
-            ONLY_INDEX: If None, all indexable properties are indexed.
+            INDEX_ONLY: If None, all indexable properties are indexed.
                 If a list of property names, only those properties are indexed.
-            MULTI_WORD_LITERAL: Class variable that allows multi-word search
+            INDEX_MULTI_WORD: Class variable that allows multi-word search
                 phrases like "statue of liberty."
-            STEMMING: Returns stemmed phrases.
+            INDEX_STEMMING: Returns stemmed phrases.
         """
         if not indexing_func:
             klass = self.__class__
-            if klass.MULTI_WORD_LITERAL:
+            if klass.INDEX_MULTI_WORD:
                 indexing_func = klass.get_search_phraseset
             else:
                 indexing_func = klass.get_simple_search_phraseset
-        if self.STEMMING:
+        if self.INDEX_STEMMING:
             stemmer = Stemmer.Stemmer('english')
         phrases = set()
         for prop_name, prop_value in self.properties().iteritems():
-            if (not self.ONLY_INDEX) or (prop_name in self.ONLY_INDEX):
+            if (not self.INDEX_ONLY) or (prop_name in self.INDEX_ONLY):
                 values = prop_value.get_value_for_datastore(self)
                 if not isinstance(values, list):
                     values = [values]
@@ -393,7 +394,7 @@ class Searchable(object):
                         not isinstance(values[0], datastore_types.Blob)):
                     for value in values:
                         words = indexing_func(value)
-                        if self.STEMMING:
+                        if self.INDEX_STEMMING:
                             stemmed_words = set(stemmer.stemWords(words))
                             phrases.update(stemmed_words)
                         else:
@@ -412,9 +413,9 @@ class Searchable(object):
         search_phrases = self.get_search_phrases(indexing_func=indexing_func)
 
         key = self.key()
-        klass = StemIndex if self.STEMMING else SearchIndex
+        klass = StemIndex if self.INDEX_STEMMING else SearchIndex
 
-        if self.__class__.MULTI_INDEX_ENTITIES:
+        if self.__class__.INDEX_USES_MULTI_ENTITIES:
             query = klass.all(keys_only=True).ancestor(self.key())
             previous_entity_keys = query.fetch(1000)
         num_phrases = len(search_phrases)
@@ -432,13 +433,13 @@ class Searchable(object):
                     'phrases': search_phrases[start_index:end_index] }
             index_entity = klass(**args)
             cur_entity_keys.append(index_entity.put())
-            if self.__class__.MULTI_INDEX_ENTITIES:
+            if self.__class__.INDEX_USES_MULTI_ENTITIES:
                 start_index = end_index
                 num_phrases -= cur_num_phrases
                 entity_num += 1
             else:
                 num_phrases = 0    # Only write one index entity
-        if self.__class__.MULTI_INDEX_ENTITIES:
+        if self.__class__.INDEX_USES_MULTI_ENTITIES:
             delete_keys = []
             for key in previous_entity_keys:
                 if key not in cur_entity_keys:
