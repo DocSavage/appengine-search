@@ -53,11 +53,11 @@ from search.pyporter2 import Stemmer
 
 # Following module-level constants are cached in instance
 
-MAX_KEYWORDS_PER_ENTITY = datastore._MAX_INDEXED_PROPERTIES - 50
+MAX_ENTITY_SEARCH_PHRASES = datastore._MAX_INDEXED_PROPERTIES - 50
 
-FULL_TEXT_MIN_LENGTH = 4
+SEARCH_PHRASE_MIN_LENGTH = 4
 
-FULL_TEXT_STOP_WORDS = frozenset([
+STOP_WORDS = frozenset([
  'a', 'about', 'according', 'accordingly', 'affected', 'affecting', 'after',
  'again', 'against', 'all', 'almost', 'already', 'also', 'although',
  'always', 'am', 'among', 'an', 'and', 'any', 'anyone', 'apparently', 'are',
@@ -98,7 +98,7 @@ class SearchIndex(db.Model):
     indexes of a parent entity.
     """
     parent_kind = db.StringProperty(required=True)
-    keywords = db.StringListProperty(required=True)
+    phrases = db.StringListProperty(required=True)
 
 class StemIndex(db.Model):
     """A relation index that holds full text stem indexing on an entity.
@@ -106,7 +106,7 @@ class StemIndex(db.Model):
     StemIndex should be used for full text indexing with stemming.
     """
     parent_kind = db.StringProperty(required=True)
-    keywords = db.StringListProperty(required=True)
+    phrases = db.StringListProperty(required=True)
 
 
 class Searchable(object):
@@ -118,16 +118,32 @@ class Searchable(object):
             author_name = db.StringProperty()
             content = db.TextProperty()
             # STEMMING = False
-            # MULTI_INDEX_ENTITIES = True
+            # MULTI_INDEX_ENTITIES = False
+            # MULTI_WORD_LITERAL = False
+            # ONLY_INDEX = ['content']
+
+    There are a few class variables that can be overridden by your Model.
+    The settings were made class variables because their use should be
+    declared at Model definition.
+
+    Defaults are for searches to use stemming, multiple index entities,
+    and index all basestring-derived properties.  Also, two and three-word
+    phrases are inserted into the index, which can be disable by setting
+    MULTI_WORD_LITERAL to False.
 
     Stemming is on by default but can be toggled off by setting STEMMING
     to False in your class declaration.
 
-    Because most keyword lists generated from an entity will be under the
-    approximately 5000 indexed property limit, this module preferentially
-    stores only one index entity.  You can allow larger indexes by setting
-    MULTI_INDEX_ENTITIES to True.  This incurs overhead on every indexing
-    operation, whether multiple index entities are writter or not, because
+    You can set a class variable ONLY_INDEX to a list of property names
+    for indexing.  If ONLY_INDEX is not None, only those properties named
+    in the list will be indexed.
+
+    Because most search phrase lists generated from an entity will be under
+    the approximately 5000 indexed property limit, you can make indexing
+    more efficient by setting MULTI_INDEX_ENTITIES to False if you know
+    your indexed content will be relatively small (or you don't care about
+    some false negatives).  When MULTI_INDEX_ENTITIES is True (default),
+    there is slight overhead on every indexing operation because
     we must query for all index entities and delete unused ones.  In the
     case of a single index entity, it can be simply overwritten.
 
@@ -150,12 +166,19 @@ class Searchable(object):
     index immediately after putting your model and forego task queueing:
 
         myPage.put()
-        myPage.index(only_index=['content'])
+        myPage.index()
 
     After your model has been indexed, you may use the search() method:
 
         Page.search('search phrase')          # -> Returns Page entities
         Page.search('stuff', keys_only=True)  # -> Returns Page keys
+
+    In the case of multi-word search phrases like the first example above,
+    the search will first list keys that match the full phrase and then
+    list keys that match the AND of individual keywords.  Note that when
+    MULTI_INDEX_ENTITIES is True (default), if a Page's index is spread
+    over multiple index entities, the keyword AND may fail portion of the
+    search may fail, i.e., there will be false negative search results.
 
     You can use the full_text_search() static method to return all entities,
     not just a particular kind, that have been indexed:
@@ -167,39 +190,73 @@ class Searchable(object):
     be returned that match indexing style (i.e., stemming on or off).
     """
 
+    ONLY_INDEX = None               # Can set to list of property names to index.
     STEMMING = True                 # Allow stemming to be turned off per subclass.
-    MULTI_INDEX_ENTITIES = False    # If FALSE, limit keywords to < MAX_KEYWORDS_PER_ENTITY
-    MULTI_WORD_LITERAL = False      # If TRUE, allow "search term" that matches phrase
+    MULTI_WORD_LITERAL = True       # Add two and three-word phrases to index.
+
+    MULTI_INDEX_ENTITIES = True     # If FALSE, limit phrases to < MAX_ENTITY_SEARCH_PHRASES
+                                    # If TRUE, incurs additional query/delete overhead on indexing.
 
     @staticmethod
-    def full_text_search(phrase, 
-                        limit=10, offset=0, kind=None, 
-                        stemming=STEMMING):
-        """Queries search indices for keywords in a phrase using a merge-join.
+    def full_text_search(phrase, limit=10, 
+                         kind=None, 
+                         stemming=STEMMING,
+                         multi_word_literal=MULTI_WORD_LITERAL):
+        """Queries search indices for phrases using a merge-join.
         
         Args:
-            phrase: String.  Search phrase with space between keywords
+            phrase: String.  Search phrase.
             kind: String.  Returned keys/entities are restricted to this kind.
 
         Returns:
             A list of parent keys or parent entities, depending on the value
-            of keys_only argument.
+            of keys_only argument.  Multi-word literal matches are returned first.
+
+        TODO -- Should provide feedback if input search phrase has stop words, etc.
         """
+        index_keys = []
+        keywords = PUNCTUATION_REGEX.sub(' ', phrase).lower().split()
         if stemming:
             stemmer = Stemmer.Stemmer('english')
-            keywords = stemmer.stemWords(phrase.split())
             klass = StemIndex
         else:
-            keywords = phrase.split()
             klass = SearchIndex
 
-        query = klass.all(keys_only=True)
-        for keyword in keywords:
-            query = query.filter('keywords =', keyword.lower())
-        if kind:
-            query = query.filter('parent_kind =', kind)
-        index_keys = query.fetch(limit=limit, offset=offset)
-        return [key.parent() for key in index_keys]
+        if len(keywords) > 1 and multi_word_literal:
+            # Try to match literal multi-word phrases first
+            if len(keywords) == 2:
+                search_phrases = [' '.join(keywords)]
+            else:
+                search_phrases = []
+                sub_strings = len(keywords) - 2
+                keyword_not_stop_word = map(lambda x: x not in STOP_WORDS, keywords)
+                for pos in xrange(0, sub_strings):
+                    if keyword_not_stop_word[pos] and keyword_not_stop_word[pos+2]:
+                        search_phrases.append(' '.join(keywords[pos:pos+3]))
+            query = klass.all(keys_only=True)
+            for phrase in search_phrases:
+                if stemming:
+                    phrase = stemmer.stemWord(phrase)
+                query = query.filter('phrases =', phrase)
+            if kind:
+                query = query.filter('parent_kind =', kind)
+            index_keys = query.fetch(limit=limit)
+
+        if len(index_keys) < limit:
+            new_limit = limit - len(index_keys)
+            keywords = filter(lambda x: len(x) >= SEARCH_PHRASE_MIN_LENGTH, keywords)
+            if stemming:
+                keywords = stemmer.stemWords(keywords)
+            query = klass.all(keys_only=True)
+            for keyword in keywords:
+                query = query.filter('phrases =', keyword)
+            if kind:
+                query = query.filter('parent_kind =', kind)
+            single_word_matches = [key for key in query.fetch(limit=new_limit) \
+                                   if key not in index_keys]
+            index_keys.extend(single_word_matches)
+
+        return [key.parent() for key in set(index_keys)]
 
     @classmethod
     def get_simple_search_phraseset(cls, text):
@@ -219,9 +276,9 @@ class Searchable(object):
             text = PUNCTUATION_REGEX.sub(' ', text)
             words = text.lower().split()
             words = set(words)
-            words -= FULL_TEXT_STOP_WORDS
+            words -= STOP_WORDS
             for word in list(words):
-                if len(word) < FULL_TEXT_MIN_LENGTH:
+                if len(word) < SEARCH_PHRASE_MIN_LENGTH:
                     words.remove(word)
         else:
             words = set()
@@ -238,8 +295,13 @@ class Searchable(object):
         Returns:
             A set of search terms that aren't stop words and meet length 
             requirement.  Set includes phrases of adjacent words that
-            aren't stop words.
+            aren't stop words.  (Stop words are allowed in middle of three-word
+            phrases like "Statue of Liberty".)
 
+        >>> Searchable.get_search_phraseset('You look through rosy-colored glasses.')
+        set(['look through rosy', 'rosy colored', 'colored', 'colored glasses', 'rosy', 'rosy colored glasses', 'glasses', 'look'])
+        >>> Searchable.get_search_phraseset('I saw the Statue of Liberty.')
+        set(['saw the statue', 'statue of liberty', 'liberty', 'statue'])
         >>> Searchable.get_search_phraseset('Recalling friends, past and present.')
         set(['recalling', 'recalling friends', 'friends'])
         """
@@ -248,28 +310,32 @@ class Searchable(object):
             text = text.lower()
             phrases = []
             two_words = []
-            three_words = []
+            three_words = ['', '']
+            three_words_no_stop = [False, False]
+            text = text.replace('-', ' ')
             fragments = text.split()
-            for frags in fragments:
-                parts = frags.split('-')
-                for part in parts:
-                    if part:
-                        word, replaced = PUNCTUATION_REGEX.subn('', part)
-                        not_end_punctuation = (replaced > 1 or part[-1] not in string.punctuation)
-                        if (replaced and not_end_punctuation) or word in FULL_TEXT_STOP_WORDS:
-                            two_words = []
-                            three_words = []
-                        else:
-                            if len(word) >= FULL_TEXT_MIN_LENGTH:
-                                phrases.append(word)
-                            two_words.append(word)
-                            three_words.append(word)
-                            if len(two_words) == 2:
-                                phrases.append(' '.join(two_words))
-                                del two_words[0]
-                            if len(three_words) == 3:
-                                phrases.append(' '.join(three_words))
-                                del three_words[0]
+            for frag in fragments:
+                word, replaced = PUNCTUATION_REGEX.subn('', frag)
+                not_end_punctuation = (replaced > 1 or frag[-1] not in string.punctuation)
+                if replaced and not_end_punctuation:
+                    two_words = []
+                    three_words = ['', '']
+                three_words.append(word)  # We allow stop words in middle
+                if word in STOP_WORDS:
+                    two_words = []
+                    three_words_no_stop.append(False)
+                else:
+                    two_words.append(word)
+                    three_words_no_stop.append(True)
+                    if len(word) >= SEARCH_PHRASE_MIN_LENGTH:
+                        phrases.append(word)
+                    if len(two_words) == 2:
+                        phrases.append(' '.join(two_words))
+                        del two_words[0]
+                    if len(three_words) == 3 and three_words_no_stop[0]:
+                        phrases.append(' '.join(three_words))
+                del three_words[0]
+                del three_words_no_stop[0]
             phrases = set(phrases)
         else:
             phrases = set()
@@ -277,32 +343,38 @@ class Searchable(object):
 
     @classmethod
     def search(cls, phrase, limit=10, offset=0, keys_only=False):
-        """Queries search indices for keywords in a phrase using a merge-join.
+        """Queries search indices for phrases using a merge-join.
         
         Use of this class method lets you easily restrict searches to a kind
         and retrieve entities or keys.
         """
         # TODO -- Handle quoted multiword query when MULTI_WORD_LITERAL = True
 
-        keys = Searchable.full_text_search(phrase, limit=limit, offset=offset,
-                                           kind=cls.kind(),
-                                           stemming=cls.STEMMING)
+        keys = Searchable.full_text_search(phrase,
+                    limit=limit, kind=cls.kind(),
+                    stemming=cls.STEMMING, 
+                    multi_word_literal=cls.MULTI_WORD_LITERAL)
         if keys_only:
             return keys
         else:
             return cls.get(keys)
 
-    def index(self, only_index=None, indexing_func=None):
-        """Generates or replaces a Search Index for a Model instance.
+    def get_search_phrases(self, indexing_func=None):
+        """Returns search phrases from properties in a given Model instance.
 
         Args (optional):
             only_index: List of strings.  Restricts indexing to these property names.
             indexing_func: A function that returns a set of keywords or phrases.
 
         Note that the indexing_func can be passed in to allow more customized
-        search phrase generation.  Multi-word literal search phrases (via setting
-        the class MULTI_WORD_LITERAL to True) is currently experimental but
-        shows how you can have different search phrase generation functions.
+        search phrase generation.
+
+        Two model variables influence the output of this method:
+            ONLY_INDEX: If None, all indexable properties are indexed.
+                If a list of property names, only those properties are indexed.
+            MULTI_WORD_LITERAL: Class variable that allows multi-word search
+                phrases like "statue of liberty."
+            STEMMING: Returns stemmed phrases.
         """
         if not indexing_func:
             klass = self.__class__
@@ -312,9 +384,9 @@ class Searchable(object):
                 indexing_func = klass.get_simple_search_phraseset
         if self.STEMMING:
             stemmer = Stemmer.Stemmer('english')
-        keywords = set()
+        phrases = set()
         for prop_name, prop_value in self.properties().iteritems():
-            if (not only_index) or (prop_name in only_index):
+            if (not self.ONLY_INDEX) or (prop_name in self.ONLY_INDEX):
                 values = prop_value.get_value_for_datastore(self)
                 if not isinstance(values, list):
                     values = [values]
@@ -323,11 +395,22 @@ class Searchable(object):
                     for value in values:
                         words = indexing_func(value)
                         if self.STEMMING:
-                            stemmed_words = set([stemmer.stemWord(w) for w in words])
-                            keywords.update(stemmed_words)
+                            stemmed_words = set(stemmer.stemWords(words))
+                            phrases.update(stemmed_words)
                         else:
-                            keywords.update(words)
-        keyword_list = list(keywords)
+                            phrases.update(words)
+        return list(phrases)
+
+    def index(self, indexing_func=None):
+        """Generates or replaces a search entities for a Model instance.
+
+        Args (optional):
+            indexing_func: A function that returns a set of keywords or phrases.
+
+        Note that the indexing_func can be passed in to allow more customized
+        search phrase generation.
+        """
+        search_phrases = self.get_search_phrases(indexing_func=indexing_func)
 
         key = self.key()
         klass = StemIndex if self.STEMMING else SearchIndex
@@ -335,27 +418,27 @@ class Searchable(object):
         if self.__class__.MULTI_INDEX_ENTITIES:
             query = klass.all(keys_only=True).ancestor(self.key())
             previous_entity_keys = query.fetch(1000)
-        num_keywords = len(keyword_list)
-        logging.debug("Number of keywords for this entity: %d", num_keywords)
+        num_phrases = len(search_phrases)
+        logging.debug("Number of search phrases for this entity: %d", num_phrases)
         start_index = 0
         entity_num = 1      # Appended to key name of index entity
         cur_entity_keys = []
-        while (num_keywords > 0):
-            cur_num_keywords = min(num_keywords, MAX_KEYWORDS_PER_ENTITY)
-            end_index = start_index + cur_num_keywords
-            num_indices = (num_keywords - 1) / MAX_KEYWORDS_PER_ENTITY + 1
+        while (num_phrases > 0):
+            cur_num_phrases = min(num_phrases, MAX_ENTITY_SEARCH_PHRASES)
+            end_index = start_index + cur_num_phrases
+            num_indices = (num_phrases - 1) / MAX_ENTITY_SEARCH_PHRASES + 1
             index_key_name = key.kind() + str(key.id_or_name()) + str(entity_num)
             args = {'parent': key, 'key_name': index_key_name,
                     'parent_kind': key.kind(), 
-                    'keywords': keyword_list[start_index:end_index] }
+                    'phrases': search_phrases[start_index:end_index] }
             index_entity = klass(**args)
             cur_entity_keys.append(index_entity.put())
             if self.__class__.MULTI_INDEX_ENTITIES:
                 start_index = end_index
-                num_keywords -= cur_num_keywords
+                num_phrases -= cur_num_phrases
                 entity_num += 1
             else:
-                num_keywords = 0    # Only write one index entity
+                num_phrases = 0    # Only write one index entity
         if self.__class__.MULTI_INDEX_ENTITIES:
             delete_keys = []
             for key in previous_entity_keys:
@@ -385,5 +468,5 @@ class SearchIndexing(webapp.RequestHandler):
             key = db.Key(key_str)
             entity = db.get(key)
             only_index = only_index_str.split(',') if only_index_str else None
-            entity.index(only_index=only_index)
+            entity.index()
 

@@ -72,6 +72,7 @@ class NoninflectedPage(search.Searchable, db.Model):
     author_name = db.StringProperty()
     content = db.TextProperty()
     STEMMING = False
+    ONLY_INDEX = ['content']
 
 class TestMisc:
     def setup(self):
@@ -88,7 +89,7 @@ class TestLoremIpsum:
         clear_datastore()
         page = NoninflectedPage(author_name='John Doe', content=LOREM_IPSUM)
         page.put()
-        page.index(only_index=['content'])
+        page.index()
         assert search.SearchIndex.all().count() == 1
         page = NoninflectedPage(author_name='Jon Favreau', 
                                 content='A director that works well with writers.')
@@ -100,9 +101,9 @@ class TestLoremIpsum:
         pass
 
     def test_only_index(self):
-        returned_pages = NoninflectedPage.search('John')
+        returned_pages = NoninflectedPage.search('John')  # Only 'content' is indexed.
         assert not returned_pages
-        returned_pages = NoninflectedPage.search('Favreau')
+        returned_pages = NoninflectedPage.search('lorem ipsum')
         assert returned_pages
 
     def test_two_word_search(self):
@@ -114,6 +115,7 @@ class TestLoremIpsum:
 
     def test_key_only_search(self):
         keys = NoninflectedPage.search('LoReM ipsum', keys_only=True)
+        print "keys: %s" % (keys)
         assert isinstance(keys, list) and len(keys) == 1
         assert isinstance(keys[0], db.Key)
         assert NoninflectedPage.search('LoReM IpSuM')[0].key() == keys[0]
@@ -122,6 +124,7 @@ class TestLoremIpsum:
         returned_pages = NoninflectedPage.search('NowhereInDoc')
         assert not returned_pages
         returned_pages = NoninflectedPage.search('director')
+        assert returned_pages
         lmatch = re.search(r'lorem', returned_pages[0].content, re.IGNORECASE)
         imatch = re.search(r'ipsum', returned_pages[0].content, re.IGNORECASE)
         assert not lmatch and not imatch
@@ -167,7 +170,7 @@ class TestBigIndex:
         import codecs
         bigfile = codecs.open(bigtextfile, 'r', 'utf-8')
         bigtext = bigfile.read()
-        words_to_use = 10 * search.MAX_KEYWORDS_PER_ENTITY
+        words_to_use = 4 * search.MAX_ENTITY_SEARCH_PHRASES
         words = bigtext.split()
         Page.MULTI_INDEX_ENTITIES = True
         page = Page(key_name="Foo", content=' '.join(words[0:words_to_use]))
@@ -178,4 +181,45 @@ class TestBigIndex:
         page.put()
         page.index()
         assert search.StemIndex.all().count() == 1
+
+class TestMultiWordSearch:
+    def setup(self):
+        clear_datastore()
+        page = Page(key_name='doetext', author_name='John Doe', 
+                    content=INFLECTION_TEST)
+        page.put()
+        page.index()
+        assert search.StemIndex.all().count() == 1
+        page = Page(key_name="statuetext", 
+                    author_name='Other Guy', content="""
+        This is the time for all good python programmers to check,
+        to test, to go forward and throw junk at the code, and in
+        so doing, try to find errors.
+          -- Unheralded inscription at base of Statue of Liberty
+        """)
+        page.put()
+        page.index()
+        assert search.StemIndex.all().count() == 2
+
+    def teardown(self):
+        pass
+
+    def test_multiword_search_phrase1(self):
+        returned_pages = Page.search('statue of liberty')
+        assert len(returned_pages) == 1
+        assert returned_pages[0].key().name() == u'statuetext'
+
+    def test_multiword_search_phrase2(self):
+        returned_pages = Page.search('statue of liberty biggy word')
+        assert not returned_pages
         
+    def test_multiword_search_phrase3(self):
+        returned_pages = Page.search('statue of liberty python')
+        assert len(returned_pages) == 1
+        assert returned_pages[0].key().name() == u'statuetext'
+
+    def test_multiword_search_phrase4(self):
+        returned_pages = Page.search('ornately narrated')
+        assert len(returned_pages) == 1
+        assert returned_pages[0].key().name() == u'doetext'
+     
