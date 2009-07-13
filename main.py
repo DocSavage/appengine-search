@@ -43,9 +43,11 @@ import search
 INDEXING_URL = '/tasks/searchindexing'
 
 class Page(search.Searchable, db.Model):
-    content = db.TextProperty()
     user = db.UserProperty()
+    title = db.StringProperty()
+    content = db.TextProperty()
     created = db.DateTimeProperty(auto_now=True)
+    INDEX_TITLE_FROM_PROP = 'title'
 
 class SimplePage(webapp.RequestHandler):
     def render(self, html):
@@ -58,24 +60,10 @@ class SimplePage(webapp.RequestHandler):
         else:
             login_url = users.create_login_url(self.request.uri)
             page += '<a href="%s">Google login</a>' % (login_url)
-        # Add donation button so I can get chinese dinner money :)
-        page += """
-        <form name="_xclick" action="https://www.paypal.com/cgi-bin/webscr" method="post">
-        <input type="hidden" name="cmd" value="_xclick">
-        <input type="hidden" name="business" value="billkatz@gmail.com">
-        <input type="hidden" name="item_name" value="Donation to help feed self-funded coder">
-        <input type="hidden" name="currency_code" value="USD">
-        <input type="image" src="http://www.paypal.com/en_US/i/btn/btn_donate_LG.gif" border="0" 
-         name="submit" alt="Donate and help feed a programmer."
-         style="position:absolute;top:2;right:65">
-        <input name="amount" size="6" maxlength="6" value="2.00"
-         style="position:absolute;top:3;right:10;width:50px">
-        </form>
-        """
         page += """</div>
         <hr>
         <h3>Full Text Search Test</h3>
-        <p>This app tests a simple full text search module for Google App Engine.
+        <p>This app tests a full text search module for Google App Engine.
         Once you are logged in, you can add text pages that will be indexed via
         Task Queue API tasks.  The search indices are efficiently stored using
         "Relation Index" entities as described in 
@@ -92,8 +80,15 @@ class SimplePage(webapp.RequestHandler):
         page += '<input name="phrase"'
         phrase = self.request.get('phrase')
         if phrase:
-            page += ' value="%s"' % (phrase)
-        page += '><input type="submit" value="Search"><em>&nbsp;minimum 4 letters long</em></form>'
+            page += ' value="%s">' % (phrase)
+        page += '<input type="submit" name="submitbtn" value="Return Pages">'
+        page += '<input type="submit" name="submitbtn" value="Return Keys Only">'
+        page += """
+        <p><strong>Return Pages</strong> retrieves the entire Page entities.<br />
+           <strong>Return Keys Only</strong> retrieves just the keys but uses
+           intelligent key naming to transmit "Title" data via the key names.</p>
+        """
+        page += '</form>'
         page += html
         page += '</body></html>'
         self.response.out.write(page)
@@ -104,11 +99,18 @@ class MainPage(SimplePage):
         if not user:
             html = '<h4>Please login to add a page.</h4>'
         else:
+            import time
+            time_string = time.strftime('Page submitted %X on %x')
             html = """
             <h4>Add a text page below:</h4>
             <form action="/" method="post">
+                <div>Title: <input type="text" size="40" name="title" 
+            """
+            html += 'value="' + time_string + '" />'
+            html += """
+                <em>This data will be encoded in the key names of index entities.</em></div>
                 <div><textarea name="content" rows="10" cols="60"></textarea></div>
-                <div><input type="submit" value="Add Page"></div>
+                <div><input type="submit" value="Add Page" /></div>
             </form>
             """
         self.render(html)
@@ -116,12 +118,13 @@ class MainPage(SimplePage):
     def post(self):
         user = users.get_current_user()
         content = self.request.get('content')
+        title = self.request.get('title')
         if not user:
             self.redirect('/?msg=You+must+be+logged+in')
         elif not content:
             self.redirect('/')
         else:
-            page = Page(content=content, user=user)
+            page = Page(content=content, title=title, user=user)
             page.put()
             page.enqueue_indexing(url=INDEXING_URL)
             html = "<div>Thanks for entering the following text:</div>"
@@ -130,18 +133,24 @@ class MainPage(SimplePage):
 
 class SearchPage(SimplePage):
     def get(self):
+        submitbtn = self.request.get('submitbtn')
         phrase = self.request.get('phrase')
-        pages = Page.search(phrase)
         html = "<h4>'" + phrase + "' was found on these pages:</h4>"
-        for page in pages:
-            html += "<div><p>User: %s, Created: %s</p><pre>%s</pre></div>" \
-                    % (str(page.user), str(page.created), cgi.escape(page.content))
+        if submitbtn == 'Return Keys Only':
+            key_list = Page.search(phrase, keys_only=True)
+            for key_and_title in key_list:
+                html += "<div><p>Title: %s</p></div>" % key_and_title[1]
+        else:
+            pages = Page.search(phrase)
+            for page in pages:
+                html += "<div><p>Title: %s</p><p>User: %s, Created: %s</p><pre>%s</pre></div>" \
+                        % (page.title, str(page.user), str(page.created), cgi.escape(page.content))
         self.render(html)
 
 application = webapp.WSGIApplication([
         ('/', MainPage),
         ('/search', SearchPage),
-        (INDEXING_URL, search.SearchIndexing)], debug=True)
+        (INDEXING_URL, search.LiteralIndexing)], debug=True)
 
 def main():
     run_wsgi_app(application)

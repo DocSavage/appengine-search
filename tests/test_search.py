@@ -65,7 +65,9 @@ def clear_datastore():
 
 class Page(search.Searchable, db.Model):
     author_name = db.StringProperty()
+    title = db.StringProperty()
     content = db.TextProperty()
+    INDEX_TITLE_FROM_PROP = 'title'
 
 class NoninflectedPage(search.Searchable, db.Model):
     """Used to test search without stemming, e.g. for precise, non-inflected words"""
@@ -90,12 +92,12 @@ class TestLoremIpsum:
         page = NoninflectedPage(author_name='John Doe', content=LOREM_IPSUM)
         page.put()
         page.index()
-        assert search.SearchIndex.all().count() == 1
+        assert search.LiteralIndex.all().count() == 1
         page = NoninflectedPage(author_name='Jon Favreau', 
                                 content='A director that works well with writers.')
         page.put()
         page.index()
-        assert search.SearchIndex.all().count() == 2
+        assert search.LiteralIndex.all().count() == 2
 
     def teardown(self):
         pass
@@ -114,11 +116,10 @@ class TestLoremIpsum:
         assert lmatch and imatch
 
     def test_key_only_search(self):
-        keys = NoninflectedPage.search('LoReM ipsum', keys_only=True)
-        print "keys: %s" % (keys)
-        assert isinstance(keys, list) and len(keys) == 1
-        assert isinstance(keys[0], db.Key)
-        assert NoninflectedPage.search('LoReM IpSuM')[0].key() == keys[0]
+        key_list = NoninflectedPage.search('LoReM ipsum', keys_only=True)
+        assert isinstance(key_list, list) and len(key_list) == 1
+        assert isinstance(key_list[0][0], db.Key)
+        assert isinstance(key_list[0][1], basestring)
 
     def test_search_miss(self):
         returned_pages = NoninflectedPage.search('NowhereInDoc')
@@ -141,14 +142,11 @@ class TestInflection:
         page = Page(author_name='John Doe', content=INFLECTION_TEST)
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 1
+        assert search.StemmedIndex.all().count() == 1
         page = Page(author_name='Jon Favreau', content='A director that works well with writers.')
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 2
-
-    def teardown(self):
-        pass
+        assert search.StemmedIndex.all().count() == 2
 
     def test_inflections(self):
         def check_inflection(word1, word2):
@@ -176,11 +174,44 @@ class TestBigIndex:
         page = Page(key_name="Foo", content=' '.join(words[0:words_to_use]))
         page.put()
         page.index()
-        assert search.StemIndex.all().count() > 1
+        assert search.StemmedIndex.all().count() > 1
         page = Page(key_name="Foo", content=INFLECTION_TEST)
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 1
+        assert search.StemmedIndex.all().count() == 1
+
+class TestKeyOnlySearch:
+    def setup(self):
+        clear_datastore()
+        self.pages = [{
+            'key_name': 'test1',
+            'content': 'This post has no title at all.'
+        }, {
+            'key_name': 'test2',
+            'title': 'Second Post',
+            'content': 'This is some text for the second post.'
+        }, {
+            'key_name': 'test3',
+            'title': 'Third Post',
+            'content': 'This is some text for the third post.  The last post.'
+        }]
+        for page_dict in self.pages:
+            page = Page(**page_dict)
+            page.put()
+            page.index()
+        assert search.StemmedIndex.all().count() == 3
+
+    def test_default_titling(self):
+        page_list = Page.search('no title', keys_only=True)
+        assert len(page_list) == 1
+        assert page_list[0][0].name() == 'test1'
+        assert page_list[0][1] == 'Page test1'  # Default titling
+
+    def test_title_from_parent(self):
+        page_list = Page.search('last', keys_only=True)
+        assert len(page_list) == 1
+        assert page_list[0][0].name() == 'test3'
+        assert page_list[0][1] == 'Third Post'
 
 class TestMultiWordSearch:
     def setup(self):
@@ -189,7 +220,7 @@ class TestMultiWordSearch:
                     content=INFLECTION_TEST)
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 1
+        assert search.StemmedIndex.all().count() == 1
         page = Page(key_name="statuetext", 
                     author_name='Other Guy', content="""
         This is the time for all good python programmers to check,
@@ -199,7 +230,7 @@ class TestMultiWordSearch:
         """)
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 2
+        assert search.StemmedIndex.all().count() == 2
         page = Page(key_name="statuetext2", 
                     author_name='Another Guy', content="""
         I have seen a statue and it declares there should be
@@ -207,10 +238,7 @@ class TestMultiWordSearch:
         """)
         page.put()
         page.index()
-        assert search.StemIndex.all().count() == 3
-
-    def teardown(self):
-        pass
+        assert search.StemmedIndex.all().count() == 3
 
     def test_multiword_search_order(self):
         returned_pages = Page.search('statue of liberty')

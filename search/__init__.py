@@ -53,6 +53,9 @@ from search.pyporter2 import Stemmer
 
 # Following module-level constants are cached in instance
 
+KEY_NAME_DELIMITER = '||'  # Used to hold arbitrary strings in key names.
+                           # Should not be contained in derived class key names.
+
 MAX_ENTITY_SEARCH_PHRASES = datastore._MAX_INDEXED_PROPERTIES - 1
 
 SEARCH_PHRASE_MIN_LENGTH = 4
@@ -91,8 +94,11 @@ STOP_WORDS = frozenset([
 
 PUNCTUATION_REGEX = re.compile('[' + re.escape(string.punctuation) + ']')
 
+# Rather than have an extra property name to distinguish stemmed from
+# non-stemmed index entities, we use different Models that are
+# identical to a base index entity.
 class SearchIndex(db.Model):
-    """A relation index that holds full text indexing on an entity.
+    """Holds full text indexing on an entity.
     
     This model is used by the Searchable mix-in to hold full text
     indexes of a parent entity.
@@ -100,13 +106,41 @@ class SearchIndex(db.Model):
     parent_kind = db.StringProperty(required=True)
     phrases = db.StringListProperty(required=True)
 
-class StemIndex(db.Model):
-    """A relation index that holds full text stem indexing on an entity.
-    
-    StemIndex should be used for full text indexing with stemming.
-    """
-    parent_kind = db.StringProperty(required=True)
-    phrases = db.StringListProperty(required=True)
+    @staticmethod
+    def get_index_key_name(parent, index_num=1):
+        key = parent.key()
+        title = key.kind() + ' ' + str(key.id_or_name())
+        uniq_key = title + KEY_NAME_DELIMITER + str(index_num)
+        if hasattr(parent, 'INDEX_TITLE_FROM_PROP'):
+            logging.debug("Getting key name from property '%s'", parent.INDEX_TITLE_FROM_PROP)
+            if hasattr(parent, parent.INDEX_TITLE_FROM_PROP):
+                title = getattr(parent, parent.INDEX_TITLE_FROM_PROP) or title
+        return uniq_key + KEY_NAME_DELIMITER + title
+
+    @staticmethod
+    def get_title(key_name=''):
+        frags = key_name.split(KEY_NAME_DELIMITER)
+        if len(frags) < 3:
+            return 'Unknown Title'
+        else:
+            return frags[2]
+
+    @classmethod
+    def put_index(cls, parent, phrases, index_num=1):
+        parent_key = parent.key()
+        args = {'key_name': cls.get_index_key_name(parent, index_num),
+                'parent': parent_key, 'parent_kind': parent_key.kind(), 
+                'phrases': phrases }
+        return cls(**args).put()
+
+
+class LiteralIndex(SearchIndex):
+    """Index model for non-inflected search phrases."""
+    pass
+
+class StemmedIndex(SearchIndex):
+    """Index model for stemmed (inflected) search phrases."""
+    pass
 
 
 class Searchable(object):
@@ -115,8 +149,10 @@ class Searchable(object):
     Add this class to your model's inheritance declaration like this:
     
         class Page(Searchable, db.Model):
+            title = db.StringProperty()
             author_name = db.StringProperty()
             content = db.TextProperty()
+            INDEX_TITLE_FROM_PROP = 'title'
             # INDEX_STEMMING = False
             # INDEX_USES_MULTI_ENTITIES = False
             # INDEX_MULTI_WORD = False
@@ -125,6 +161,11 @@ class Searchable(object):
     There are a few class variables that can be overridden by your Model.
     The settings were made class variables because their use should be
     declared at Model definition.
+
+    You can declare a string property to be stowed in index key names by
+    using the INDEX_TITLE_FROM_PROP variable.  This allows you to retrieve
+    useful labels on key-only searches without doing a get() on the whole 
+    entity.
 
     Defaults are for searches to use stemming, multiple index entities,
     and index all basestring-derived properties.  Also, two and three-word
@@ -155,7 +196,7 @@ class Searchable(object):
         myPage.enqueue_indexing(url='/tasks/searchindexing')
 
     Note that a url must be included that corresponds with the url mapped
-    to search.SearchIndexing controller.
+    to search.LiteralIndexing controller.
 
     You can limit the properties indexed by passing in a list of 
     property names:
@@ -210,8 +251,8 @@ class Searchable(object):
             kind: String.  Returned keys/entities are restricted to this kind.
 
         Returns:
-            A list of parent keys or parent entities, depending on the value
-            of keys_only argument.  Multi-word literal matches are returned first.
+            A list of (key, title) tuples corresponding to the indexed entities.  
+            Multi-word literal matches are returned first.
 
         TODO -- Should provide feedback if input search phrase has stop words, etc.
         """
@@ -219,9 +260,9 @@ class Searchable(object):
         keywords = PUNCTUATION_REGEX.sub(' ', phrase).lower().split()
         if stemming:
             stemmer = Stemmer.Stemmer('english')
-            klass = StemIndex
+            klass = StemmedIndex
         else:
-            klass = SearchIndex
+            klass = LiteralIndex
 
         if len(keywords) > 1 and multi_word_literal:
             # Try to match literal multi-word phrases first
@@ -246,7 +287,6 @@ class Searchable(object):
         if len(index_keys) < limit:
             new_limit = limit - len(index_keys)
             keywords = filter(lambda x: len(x) >= SEARCH_PHRASE_MIN_LENGTH, keywords)
-            logging.debug("+Keywords: %s", keywords)
             if stemming:
                 keywords = stemmer.stemWords(keywords)
             query = klass.all(keys_only=True)
@@ -258,7 +298,7 @@ class Searchable(object):
                                    if key not in index_keys]
             index_keys.extend(single_word_matches)
 
-        return [key.parent() for key in index_keys]
+        return [(key.parent(), SearchIndex.get_title(key.name())) for key in index_keys]
 
     @classmethod
     def get_simple_search_phraseset(cls, text):
@@ -344,20 +384,30 @@ class Searchable(object):
         return phrases
 
     @classmethod
-    def search(cls, phrase, limit=10, offset=0, keys_only=False):
+    def search(cls, phrase, limit=10, keys_only=False):
         """Queries search indices for phrases using a merge-join.
         
         Use of this class method lets you easily restrict searches to a kind
         and retrieve entities or keys.
+
+        Args:
+            phrase: Search phrase (string)
+            limit: Number of entities or keys to return.
+            keys_only: If True, return only keys with title of parent entity.
+        
+        Returns:
+            A list.  If keys_only is True, the list holds (key, title) tuples.
+            If keys_only is False, the list holds Model instances.
         """
-        keys = Searchable.full_text_search(phrase,
-                    limit=limit, kind=cls.kind(),
-                    stemming=cls.INDEX_STEMMING, 
-                    multi_word_literal=cls.INDEX_MULTI_WORD)
+        key_list = Searchable.full_text_search(
+                        phrase, limit=limit, kind=cls.kind(),
+                        stemming=cls.INDEX_STEMMING, 
+                        multi_word_literal=cls.INDEX_MULTI_WORD)
         if keys_only:
-            return keys
+            logging.debug("key_list: %s", key_list)
+            return key_list
         else:
-            return cls.get(keys)
+            return [cls.get(key_and_title[0]) for key_and_title in key_list]
 
     def get_search_phrases(self, indexing_func=None):
         """Returns search phrases from properties in a given Model instance.
@@ -413,26 +463,23 @@ class Searchable(object):
         search_phrases = self.get_search_phrases(indexing_func=indexing_func)
 
         key = self.key()
-        klass = StemIndex if self.INDEX_STEMMING else SearchIndex
+        klass = StemmedIndex if self.INDEX_STEMMING else LiteralIndex
 
         if self.__class__.INDEX_USES_MULTI_ENTITIES:
-            query = klass.all(keys_only=True).ancestor(self.key())
-            previous_entity_keys = query.fetch(1000)
+            query = klass.all(keys_only=True).ancestor(key)
+            previous_index_keys = query.fetch(1000)
         num_phrases = len(search_phrases)
 
         start_index = 0
         entity_num = 1      # Appended to key name of index entity
-        cur_entity_keys = []
+        index_keys = []
         while (num_phrases > 0):
             cur_num_phrases = min(num_phrases, MAX_ENTITY_SEARCH_PHRASES)
             end_index = start_index + cur_num_phrases
             num_indices = (num_phrases - 1) / MAX_ENTITY_SEARCH_PHRASES + 1
-            index_key_name = key.kind() + str(key.id_or_name()) + str(entity_num)
-            args = {'parent': key, 'key_name': index_key_name,
-                    'parent_kind': key.kind(), 
-                    'phrases': search_phrases[start_index:end_index] }
-            index_entity = klass(**args)
-            cur_entity_keys.append(index_entity.put())
+            index_key = klass.put_index(parent=self, index_num=entity_num,
+                                        phrases=search_phrases[start_index:end_index])
+            index_keys.append(index_key)
             if self.__class__.INDEX_USES_MULTI_ENTITIES:
                 start_index = end_index
                 num_phrases -= cur_num_phrases
@@ -441,8 +488,8 @@ class Searchable(object):
                 num_phrases = 0    # Only write one index entity
         if self.__class__.INDEX_USES_MULTI_ENTITIES:
             delete_keys = []
-            for key in previous_entity_keys:
-                if key not in cur_entity_keys:
+            for key in previous_index_keys:
+                if key not in index_keys:
                     delete_keys.append(key)
             db.delete(delete_keys)
 
@@ -450,7 +497,7 @@ class Searchable(object):
         """Adds an indexing task to the default task queue.
         
         Args:
-            url: String. The url associated with SearchIndexing handler.
+            url: String. The url associated with LiteralIndexing handler.
             only_index: List of strings.  Restricts indexing to these prop names.
         """
         if url:
@@ -459,7 +506,7 @@ class Searchable(object):
                 params['only_index'] = ' '.join(only_index)
             taskqueue.add(url=url, params=params)
 
-class SearchIndexing(webapp.RequestHandler):
+class LiteralIndexing(webapp.RequestHandler):
     """Handler for full text indexing task."""
     def post(self):
         key_str = self.request.get('key')
