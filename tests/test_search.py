@@ -213,6 +213,19 @@ class TestKeyOnlySearch:
         assert page_list[0][0].name() == 'test3'
         assert page_list[0][1] == 'Third Post'
 
+    def test_title_change(self):
+        pages = Page.search('second post')
+        assert len(pages) == 1
+        page = pages[0]
+        page.title = 'My Great New Title'
+        old_key = page.put()
+        page.indexed_title_changed()
+        assert search.StemmedIndex.all().count() == 3
+        page_list = Page.search('second post', keys_only=True)
+        assert len(page_list) == 1
+        assert page_list[0][1] == 'My Great New Title'
+        assert page_list[0][0].id_or_name() == old_key.id_or_name()
+
 class TestMultiWordSearch:
     def setup(self):
         clear_datastore()

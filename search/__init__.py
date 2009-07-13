@@ -51,6 +51,12 @@ from google.appengine.api.labs import taskqueue
 # Use python port of Porter2 stemmer.
 from search.pyporter2 import Stemmer
 
+class Error(Exception):
+    """Base search module error type."""
+
+class IndexTitleError(Error):
+    """Raised when INDEX_TITLE_FROM_PROP or title alterations are incorrect."""
+
 # Following module-level constants are cached in instance
 
 KEY_NAME_DELIMITER = '||'  # Used to hold arbitrary strings in key names.
@@ -125,6 +131,14 @@ class SearchIndex(db.Model):
         else:
             return frags[2]
 
+    @staticmethod
+    def get_index_num(key_name=''):
+        frags = key_name.split(KEY_NAME_DELIMITER)
+        if len(frags) < 2:
+            return '1'
+        else:
+            return frags[1]
+
     @classmethod
     def put_index(cls, parent, phrases, index_num=1):
         parent_key = parent.key()
@@ -136,11 +150,9 @@ class SearchIndex(db.Model):
 
 class LiteralIndex(SearchIndex):
     """Index model for non-inflected search phrases."""
-    pass
 
 class StemmedIndex(SearchIndex):
     """Index model for stemmed (inflected) search phrases."""
-    pass
 
 
 class Searchable(object):
@@ -408,6 +420,23 @@ class Searchable(object):
             return key_list
         else:
             return [cls.get(key_and_title[0]) for key_and_title in key_list]
+
+    def indexed_title_changed(self):
+        """Renames index entities for this model to match new title."""
+        klass = StemmedIndex if self.INDEX_STEMMING else LiteralIndex
+        query = klass.all(keys_only=True).ancestor(self.key())
+        old_index_keys = query.fetch(1000)
+        if not hasattr(self, 'INDEX_TITLE_FROM_PROP'):
+            raise IndexTitleError('Must declare a property name via INDEX_TITLE_FROM_PROP')
+        new_keys = []
+        for old_key in old_index_keys:
+            old_index = db.get(old_key)
+            index_num = SearchIndex.get_index_num(old_key.name())
+            index_key = klass.put_index(parent=self, index_num=index_num,
+                                        phrases=old_index.phrases)
+            new_keys.append(index_key)
+        delete_keys = filter(lambda key: key not in new_keys, old_index_keys)
+        db.delete(delete_keys)
 
     def get_search_phrases(self, indexing_func=None):
         """Returns search phrases from properties in a given Model instance.
