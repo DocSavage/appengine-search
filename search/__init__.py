@@ -109,9 +109,6 @@ class SearchIndex(db.Model):
     This model is used by the Searchable mix-in to hold full text
     indexes of a parent entity.
     """
-    parent_kind = db.StringProperty(required=True)
-    phrases = db.StringListProperty(required=True)
-
     @staticmethod
     def get_index_key_name(parent, index_num=1):
         key = parent.key()
@@ -150,9 +147,14 @@ class SearchIndex(db.Model):
 
 class LiteralIndex(SearchIndex):
     """Index model for non-inflected search phrases."""
+    parent_kind = db.StringProperty(required=True)
+    phrases = db.StringListProperty(required=True)
+
 
 class StemmedIndex(SearchIndex):
     """Index model for stemmed (inflected) search phrases."""
+    parent_kind = db.StringProperty(required=True)
+    phrases = db.StringListProperty(required=True)
 
 
 class Searchable(object):
@@ -535,7 +537,7 @@ class Searchable(object):
                 params['only_index'] = ' '.join(only_index)
             taskqueue.add(url=url, params=params)
 
-class LiteralIndexing(webapp.RequestHandler):
+class SearchIndexing(webapp.RequestHandler):
     """Handler for full text indexing task."""
     def post(self):
         key_str = self.request.get('key')
@@ -543,6 +545,9 @@ class LiteralIndexing(webapp.RequestHandler):
         if key_str:
             key = db.Key(key_str)
             entity = db.get(key)
-            only_index = only_index_str.split(',') if only_index_str else None
-            entity.index()
+            if not entity:
+                self.response.set_status(200)   # Clear task because it's a bad key
+            else:
+                only_index = only_index_str.split(',') if only_index_str else None
+                entity.index()
 

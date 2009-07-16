@@ -48,6 +48,7 @@ class Page(search.Searchable, db.Model):
     content = db.TextProperty()
     created = db.DateTimeProperty(auto_now=True)
     INDEX_TITLE_FROM_PROP = 'title'
+    # INDEX_USES_MULTI_ENTITIES = False
 
 class SimplePage(webapp.RequestHandler):
     def render(self, html):
@@ -150,7 +151,7 @@ class SearchPage(SimplePage):
 application = webapp.WSGIApplication([
         ('/', MainPage),
         ('/search', SearchPage),
-        (INDEXING_URL, search.LiteralIndexing)], debug=True)
+        (INDEXING_URL, search.SearchIndexing)], debug=True)
 
 def main():
     run_wsgi_app(application)
